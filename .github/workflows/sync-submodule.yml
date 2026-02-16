@@ -18,23 +18,15 @@ jobs:
 
       - name: Update notebooks submodule
         run: |
-          git submodule update --remote --merge data/blog/notebooks
-
-      - name: Show changes
-        run: |
-          git status
-          git diff data/blog/notebooks
+          cd data/blog/notebooks
+          git fetch origin main
+          git reset --hard origin/main
+          cd ../../..
 
       - name: Commit and push changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          if git diff --quiet data/blog/notebooks; then
-            echo "No changes to commit"
-            exit 0
-          fi
-
           git add data/blog/notebooks
-          git commit -m "🤖 Auto-update notebooks submodule from Notebooks@${{ github.sha }}"
+          git commit -m "🤖 Auto-update notebooks submodule to ${{ github.sha }}" || exit 0
           git push origin main
