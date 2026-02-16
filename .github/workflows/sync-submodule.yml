@@ -1,0 +1,40 @@
+name: Sync Portfolio Submodule
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  update-submodule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Portfolio repo
+        uses: actions/checkout@v4
+        with:
+          repository: YsnHdn/Portfolio
+          token: ${{ secrets.PAT_TOKEN }}
+          submodules: true
+
+      - name: Update notebooks submodule
+        run: |
+          git submodule update --remote --merge data/blog/notebooks
+
+      - name: Show changes
+        run: |
+          git status
+          git diff data/blog/notebooks
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet data/blog/notebooks; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git add data/blog/notebooks
+          git commit -m "🤖 Auto-update notebooks submodule from Notebooks@${{ github.sha }}"
+          git push origin main
