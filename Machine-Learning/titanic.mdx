@@ -1,0 +1,516 @@
+---
+title: Predicting Titanic Survival with Machine Learning
+date: "2025-10-20"
+lastmod: "2025-10-20"
+tags:
+  - Python
+  - ML
+  - Beginner
+draft: false
+summary: a brief intro to ML through titanic dataset
+images:
+  - /static/images/blog/default.jpg
+---
+
+# Predicting Titanic Survival with Machine Learning
+
+*April 15, 1912. The RMS Titanic sinks in the North Atlantic. Of the 2,224 passengers and crew aboard, only 710 survive.*
+
+More than a century later, this tragic event has become one of the most studied datasets in data science — not to trivialize the disaster, but because it raises a fascinating and deeply human question:
+
+> **What factors determined who would survive?**
+
+In this notebook, we'll build a complete machine learning pipeline to answer exactly that. We'll go from raw passenger records to a trained model capable of predicting survival — and along the way, we'll uncover what the data reveals about the social dynamics of that night.
+
+---
+
+**What you'll learn:**
+- How to handle missing data intelligently using domain knowledge
+- How to build reusable preprocessing pipelines with scikit-learn
+- How to compare multiple ML models (Logistic Regression, Random Forest, XGBoost)
+- How to interpret model performance beyond simple accuracy
+- How to identify which features the model relies on most
+
+Let's dive in.
+
+---
+## Setting Up
+
+We start by importing our tools and loading the dataset.
+
+The Titanic dataset is available directly from scikit-learn via OpenML — no manual download needed.
+
+```python
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.datasets import fetch_openml
+
+# Load the Titanic dataset from OpenML
+titanic = fetch_openml(name='titanic', version=1, as_frame=True)
+df = titanic.frame
+
+print(f"Dataset loaded: {df.shape[0]} passengers, {df.shape[1]} features")
+df.head()
+```
+
+---
+## Exploring the Data
+
+Before building any model, we need to understand what we're working with. Let's look at the structure of the dataset.
+
+```python
+df.info()
+```
+
+Here's a quick guide to the key columns:
+
+| Column | Description |
+|--------|-------------|
+| `pclass` | Passenger class (1 = First, 2 = Second, 3 = Third) |
+| `survived` | Target: 1 = survived, 0 = did not survive |
+| `name` | Full name (we'll extract the title from this) |
+| `sex` | Gender |
+| `age` | Age in years (263 values missing) |
+| `sibsp` | # of siblings/spouses aboard |
+| `parch` | # of parents/children aboard |
+| `fare` | Ticket price |
+| `embarked` | Port of embarkation (C = Cherbourg, Q = Queenstown, S = Southampton) |
+| `cabin` | Cabin number (77% missing — mostly unusable) |
+| `boat` | Lifeboat number ⚠️ *data leakage* |
+| `body` | Body identification number ⚠️ *data leakage* |
+
+### A note on data leakage
+
+You'll notice that `boat` and `body` have many missing values — but not for the reason you might think.
+
+- `boat` contains the lifeboat number of survivors. If you survived, you have a boat number. If you didn't, the field is empty.
+- `body` contains the body recovery number of victims. Same logic, reversed.
+
+These columns are **perfect predictors by definition** — but they would be completely unavailable at prediction time (before the event). Using them would be cheating. We'll drop them along with `cabin` (too sparse) and `home.dest` (too noisy).
+
+```python
+# Store the target before we start cleaning
+target = df['survived']
+
+# Drop columns we can't or shouldn't use
+df = df.drop(columns=['cabin', 'boat', 'body', 'home.dest'])
+
+print(f"Cleaned shape: {df.shape}")
+```
+
+---
+## Handling Missing Values
+
+Missing data is one of the most common challenges in real-world datasets. The Titanic data has three columns with missing values:
+
+| Column | Missing | Strategy |
+|--------|---------|----------|
+| `age` | ~20% | Smart imputation by title group |
+| `embarked` | 2 values | Fill with most common port |
+| `fare` | 1 value | Fill with mean fare |
+
+The `age` column deserves special attention. A naive approach would be to fill all missing ages with the global mean (~30 years). But that's not very thoughtful — a 5-year-old child and a 60-year-old aristocrat are both "passengers" in the data, yet they're nothing alike.
+
+### The trick: extract titles from names
+
+Passenger names contain honorific titles like *Mr.*, *Mrs.*, *Master.*, *Miss.* — and these titles carry strong age signals. A "Master." is almost always a young boy. A "Mr." is an adult man.
+
+We can extract these titles and use them to impute age much more accurately.
+
+```python
+# Extract title from the passenger's full name using regex
+# Example: "Braund, Mr. Owen Harris" → "Mr."
+df['Title'] = df['name'].str.extract(r' ([A-Za-z]+\.)')
+
+# How many unique titles are there?
+print(f"Unique titles found: {df['Title'].nunique()}")
+print()
+print("Mean age by title (sorted):")
+print(df.groupby('Title')['age'].mean().sort_values().round(1))
+```
+
+Interesting! We can see that:
+- `Master.` has a mean age of ~5 — these are boys
+- `Miss.` ~22 — young unmarried women  
+- `Mr.` ~32 — adult men
+- `Mrs.` ~37 — married women
+- Rare titles like `Sir.`, `Lady.`, `Countess.` correspond to older, high-status individuals
+
+However, many of these rare titles appear only once or twice. We'll consolidate them into a `Rare` category to avoid overfitting to tiny groups.
+
+```python
+# Consolidate rare titles into cleaner groups
+rare_titles = ['Dona.', 'Countess.', 'Sir.', 'Lady.', 'Capt.',
+               'Jonkheer.', 'Don.', 'Major.', 'Col.', 'Rev.', 'Dr.']
+
+df['Title'] = df['Title'].apply(
+    lambda x: 'Rare'   if x in rare_titles
+    else      'Mrs.'   if x == 'Mme.'
+    else      'Miss.'  if x in ['Mlle.', 'Ms.']
+    else      x
+)
+
+print("Final title distribution:")
+print(df['Title'].value_counts())
+print()
+print("Mean age per group (used for imputation):")
+print(df.groupby('Title')['age'].mean().sort_values().round(1))
+```
+
+```python
+# Impute missing ages with the mean age of the passenger's title group
+# This is much smarter than a global mean — it respects the age profile of each social role
+df['age'] = df['age'].fillna(df.groupby('Title')['age'].transform('mean'))
+
+# Impute the 2 missing embarked values with the most common port (Southampton)
+df['embarked'] = df['embarked'].fillna(df['embarked'].mode()[0])
+
+# Impute the single missing fare with the mean
+df['fare'] = df['fare'].fillna(df['fare'].mean())
+
+# Verify — no missing values should remain (except the target)
+missing = df.isnull().sum()
+print("Missing values remaining:")
+print(missing[missing > 0] if missing.any() else "None! ✓")
+```
+
+---
+## Building the Preprocessing Pipeline
+
+Before feeding data to a machine learning model, we need to:
+1. **Encode categorical variables** — models speak numbers, not words
+2. **Scale numerical features** — ensures features like `fare` (0–512) don't dominate `age` (0–80) just because of their range
+
+We use scikit-learn's `Pipeline` and `ColumnTransformer` to do this cleanly and safely. The key advantage of pipelines: the same transformations are applied consistently to both training and test data, with no risk of data leakage.
+
+```python
+from sklearn.compose import ColumnTransformer, make_column_selector as selector
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.model_selection import train_test_split
+
+# Drop columns not needed for modeling
+target = df['survived']
+df = df.drop(columns=['ticket', 'survived', 'name'])
+
+# Auto-detect which columns are numeric vs categorical
+numeric_features    = selector(dtype_exclude=['object', 'category'])(df)
+categorical_features = selector(dtype_include=['object', 'category'])(df)
+
+print(f"Numeric features:     {numeric_features}")
+print(f"Categorical features: {categorical_features}")
+```
+
+```python
+# Build the preprocessing transformer
+# - OneHotEncoder for categorical features (drop='first' avoids the dummy variable trap)
+# - StandardScaler for continuous features
+# - passthrough for ordinal integers (pclass, sibsp, parch)
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('categorical', OneHotEncoder(drop='first', handle_unknown='ignore', sparse_output=False), categorical_features),
+        ('numerical', StandardScaler(), ['age', 'fare']),
+    ],
+    remainder='passthrough',
+    force_int_remainder_cols=False
+)
+
+# Train/test split — stratified to keep the same survival ratio in both sets
+X_train, X_test, y_train, y_test = train_test_split(
+    df, target.astype(int),
+    test_size=0.2,
+    random_state=42,
+    stratify=target
+)
+
+print(f"Training set:  {len(X_train)} passengers ({y_train.mean():.1%} survived)")
+print(f"Test set:      {len(X_test)} passengers ({y_test.mean():.1%} survived)")
+```
+
+---
+## Training the Models
+
+We'll train three different classifiers and compare them.
+
+Why three models? Because no single algorithm is universally best. Comparing models helps us understand whether the data has a simple linear structure or needs something more complex.
+
+Each model is wrapped in a `Pipeline` that includes the preprocessing steps — so training, predicting, and evaluating is seamless.
+
+```python
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from sklearn.pipeline import Pipeline
+
+# Build pipelines — preprocessing + model in one object
+pipeline_logistic = Pipeline([
+    ('preprocessor', preprocessor),
+    ('model', LogisticRegression(max_iter=1000, random_state=42))
+])
+
+pipeline_rf = Pipeline([
+    ('preprocessor', preprocessor),
+    ('model', RandomForestClassifier(n_estimators=100, random_state=42))
+])
+
+pipeline_xgb = Pipeline([
+    ('preprocessor', preprocessor),
+    ('model', XGBClassifier(eval_metric='logloss', random_state=42))
+])
+
+# Train all three
+for name, pipeline in [('Logistic Regression', pipeline_logistic),
+                        ('Random Forest',       pipeline_rf),
+                        ('XGBoost',             pipeline_xgb)]:
+    pipeline.fit(X_train, y_train)
+    print(f"✓ {name} trained")
+```
+
+---
+## Evaluating the Models
+
+### Accuracy — a first look
+
+Let's start with the simplest metric: what percentage of predictions are correct?
+
+```python
+models = {
+    'Logistic Regression': pipeline_logistic,
+    'Random Forest':       pipeline_rf,
+    'XGBoost':             pipeline_xgb,
+}
+
+print(f"{'Model':<25} {'Test Accuracy':>14}")
+print("-" * 41)
+for name, pipeline in models.items():
+    acc = pipeline.score(X_test, y_test)
+    print(f"{name:<25} {acc:>14.2%}")
+```
+
+Logistic Regression leads the pack — which is actually quite telling. When a simple linear model outperforms more complex ones, it usually means the underlying patterns in the data are genuinely linear (or close to it). In this case, the survival factors — sex, class, age — are indeed fairly linear in their relationship to survival.
+
+But accuracy alone doesn't tell the full story. Let's dig deeper.
+
+### Classification Report — precision, recall, F1
+
+Imagine two scenarios:
+- A model that predicts "nobody survived" would have 62% accuracy (because 62% indeed didn't survive) — but it's completely useless.
+- We care about **correctly identifying survivors** (recall) and **not falsely flagging victims as survivors** (precision).
+
+```python
+from sklearn.metrics import classification_report
+
+for name, pipeline in models.items():
+    print(f"\n{'─'*50}")
+    print(f"  {name}")
+    print('─'*50)
+    print(classification_report(y_test, pipeline.predict(X_test),
+                                target_names=['Did not survive', 'Survived']))
+```
+
+### ROC Curve — comparing models at a glance
+
+The ROC curve shows how well each model distinguishes survivors from non-survivors across all possible decision thresholds.
+
+The **AUC** (Area Under the Curve) summarizes this in a single number: 1.0 = perfect, 0.5 = random guessing.
+
+```python
+from sklearn.metrics import roc_auc_score, roc_curve
+
+fig, ax = plt.subplots(figsize=(8, 6))
+
+for name, pipeline in models.items():
+    proba = pipeline.predict_proba(X_test)[:, 1]
+    fpr, tpr, _ = roc_curve(y_test, proba)
+    auc = roc_auc_score(y_test, proba)
+    ax.plot(fpr, tpr, linewidth=2, label=f'{name} (AUC = {auc:.3f})')
+
+ax.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random baseline (AUC = 0.500)')
+ax.set_xlabel('False Positive Rate', fontsize=12)
+ax.set_ylabel('True Positive Rate (Recall)', fontsize=12)
+ax.set_title('ROC Curve — Model Comparison', fontsize=14, fontweight='bold')
+ax.legend(loc='lower right', fontsize=10)
+ax.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+### Finding the Optimal Threshold — Youden Index
+
+By default, models classify a passenger as "survived" when the predicted probability exceeds 0.5. But this threshold isn't always optimal.
+
+The **Youden Index** (J = TPR − FPR) finds the threshold that maximizes the gap between true positives and false positives — giving you the best trade-off between sensitivity and specificity.
+
+```python
+# Compute optimal threshold for Logistic Regression using Youden Index
+proba_lr = pipeline_logistic.predict_proba(X_test)[:, 1]
+fpr, tpr, thresholds = roc_curve(y_test, proba_lr)
+
+youden_index = tpr - fpr
+best_idx = youden_index.argmax()
+
+print(f"Default threshold (0.5):        J = {(tpr[np.searchsorted(fpr, 0.0)]-fpr[np.searchsorted(fpr, 0.0)]):.3f}")
+print(f"Optimal threshold ({thresholds[best_idx]:.3f}): J = {youden_index[best_idx]:.3f}")
+print(f"  At this threshold → TPR: {tpr[best_idx]:.3f}, FPR: {fpr[best_idx]:.3f}")
+```
+
+---
+## Cross-Validation — How Reliable Are These Results?
+
+The results above are based on a single test set. But what if we got lucky (or unlucky) with that particular split? 
+
+**5-fold cross-validation** solves this: it trains and evaluates the model 5 times on different subsets of the data, giving us a more reliable estimate of real-world performance.
+
+```python
+from sklearn.model_selection import cross_val_score
+
+print(f"{'Model':<25} {'Mean Recall':>12}  {'Std Dev':>10}")
+print("-" * 51)
+
+cv_results = {}
+for name, pipeline in models.items():
+    scores = cross_val_score(pipeline, X_train, y_train, cv=5, scoring='recall')
+    cv_results[name] = scores
+    print(f"{name:<25} {scores.mean():>12.4f}  ±{scores.std():>8.4f}")
+```
+
+```python
+# Visualize the distribution of recall scores across the 5 folds
+fig, ax = plt.subplots(figsize=(8, 5))
+
+bp = ax.boxplot(list(cv_results.values()),
+                labels=list(cv_results.keys()),
+                patch_artist=True,
+                medianprops=dict(color='black', linewidth=2))
+
+colors = ['#4C72B0', '#55A868', '#C44E52']
+for patch, color in zip(bp['boxes'], colors):
+    patch.set_facecolor(color)
+    patch.set_alpha(0.7)
+
+ax.set_ylabel('Recall (5-fold CV)', fontsize=12)
+ax.set_title('Cross-Validation Recall Distribution(Higher is better; narrow box = more consistent)', fontsize=12)
+ax.grid(axis='y', alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+---
+## Hyperparameter Tuning
+
+Every model has hyperparameters — settings that control how the model learns, which we don't learn from the data itself. For Logistic Regression, the main hyperparameter is `C`: the inverse of regularization strength.
+
+- **Small C** → strong regularization → simpler model, less overfitting
+- **Large C** → weak regularization → more complex model, potentially more overfitting
+
+We use **GridSearchCV** to automatically test several combinations and pick the best one (judged by 5-fold cross-validation accuracy).
+
+```python
+from sklearn.model_selection import GridSearchCV
+
+param_grid = {
+    'model__C': [0.01, 0.1, 1, 10, 100],
+    'model__solver': ['lbfgs', 'liblinear']
+}
+
+grid_search = GridSearchCV(
+    pipeline_logistic,
+    param_grid,
+    cv=5,
+    scoring='accuracy',
+    n_jobs=-1
+)
+grid_search.fit(X_train, y_train)
+
+print(f"Best hyperparameters: {grid_search.best_params_}")
+print(f"Best CV accuracy:     {grid_search.best_score_:.4f}")
+```
+
+```python
+# Compare default vs tuned model on the test set
+print("Default Logistic Regression:")
+print(classification_report(y_test, pipeline_logistic.predict(X_test),
+                             target_names=['Did not survive', 'Survived']))
+
+print("\nTuned Logistic Regression (best hyperparameters):")
+print(classification_report(y_test, grid_search.best_estimator_.predict(X_test),
+                             target_names=['Did not survive', 'Survived']))
+```
+
+---
+## What Did the Model Learn?
+
+Here's perhaps the most interesting part: which features actually drove survival predictions?
+
+Random Forests provide **feature importances** — a measure of how much each feature contributed to reducing prediction error across all the trees in the forest. Let's visualize this.
+
+```python
+# Extract feature importances from the trained Random Forest
+feature_names = pipeline_rf['preprocessor'].get_feature_names_out()
+importances = pipeline_rf['model'].feature_importances_
+
+importance_df = (
+    pd.Series(importances, index=feature_names)
+    .sort_values(ascending=True)  # ascending for horizontal bar chart
+)
+
+# Plot
+fig, ax = plt.subplots(figsize=(9, 6))
+colors = ['#d73027' if v > 0.1 else '#4575b4' for v in importance_df.values]
+importance_df.plot(kind='barh', ax=ax, color=colors, edgecolor='white')
+
+ax.set_title('Feature Importances — Random Forest(What the model relies on most)', fontsize=13, fontweight='bold')
+ax.set_xlabel('Importance (mean decrease in Gini impurity)', fontsize=11)
+ax.axvline(x=0.1, color='gray', linestyle='--', linewidth=1, alpha=0.5, label='0.10 threshold')
+ax.legend(fontsize=9)
+ax.grid(axis='x', alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+The results are striking — and historically resonant:
+
+- **Fare** and **Age** are the top two predictors. Wealthier passengers (higher fare) had better access to lifeboats and were more likely to be in upper cabins closer to the deck.
+
+- **Sex** and **Title** rank highly — reflecting the "women and children first" evacuation protocol that was rigorously enforced that night.
+
+- **Passenger class** also matters — first-class passengers had priority access to lifeboats and were located in upper decks.
+
+The model, trained purely on numbers, has rediscovered the social hierarchy of the Edwardian era.
+
+---
+## Wrapping Up
+
+Let's summarize what we've built and what we found.
+
+### Results at a glance
+
+| Model | Test Accuracy | Notes |
+|-------|--------------|-------|
+| **Logistic Regression** | ~85% | Best performer — the survival signal is largely linear |
+| XGBoost | ~81% | Good, but overkill for this dataset |
+| Random Forest | ~79% | Most useful for feature importance analysis |
+
+### Key takeaways
+
+**On the data science side:**
+- Imputing age using title groups was far more accurate than a global mean — domain knowledge matters
+- Pipelines make preprocessing reusable, safe, and production-ready
+- Cross-validation gives a much more reliable performance estimate than a single train/test split
+
+**On the historical side:**
+- The data confirms that gender, age, wealth (fare/class), and social title were the primary determinants of survival
+- The "women and children first" protocol is clearly visible in the feature importances
+
+### What's next?
+
+If you want to push this further, here are some directions:
+- **Feature engineering**: create a `family_size` feature (`sibsp + parch + 1`), or bin passengers into age groups
+- **SHAP values**: for more nuanced, individual-level model explanations
+- **Stacking**: combine the three models' predictions for potentially better results
+- **Threshold tuning**: deploy the model with the Youden-optimal threshold instead of the default 0.5
+
+---
+
+*Thanks for reading. If you have questions or want to build on this analysis, feel free to reach out.*
