@@ -1,0 +1,767 @@
+---
+title: Your Model is Lying to You: Customer Churn Prediction
+date: "2025-02-24"
+lastmod: "2025-02-24"
+tags:
+  - Python
+  - ML
+  - Classification
+  - Beginner
+draft: false
+summary: You built a model. It scores 80% accuracy. You're happy. But your model is broken — and you don't know it yet. A complete end-to-end ML project on customer churn: imbalanced data, Chi-squared feature selection, feature engineering, sklearn Pipeline, Recall vs Accuracy, GridSearchCV, and ROC curve.
+images:
+  - /static/images/blog/default.jpg
+---
+
+# Your Model is Lying to You: Customer Churn Prediction
+
+*A telecom company just ran its first machine learning model. Accuracy: 80%. The team is celebrating.*
+
+*Three months later, they lost 500 customers the model never flagged. Not a single one.*
+
+*What went wrong?*
+
+This is the story of **imbalanced data** — one of the most dangerous and common traps in real-world machine learning. By the end of this notebook, you'll know exactly how to spot it, fix it, and build models that actually work.
+
+We'll use the **IBM Telco Customer Churn dataset** — a real dataset of ~7,000 telecom customers, each labeled as either churned (left the company) or stayed.
+
+> **Churn** = a customer who cancels their subscription and leaves. For telecom companies, churn is extremely costly — acquiring a new customer costs 5 to 10x more than retaining an existing one.
+
+Our goal: **predict which customers are about to leave, before they do.**
+
+---
+
+**What you'll learn in this notebook:**
+- Why accuracy is a dangerous metric when your data is imbalanced
+- How to use statistical tests (Chi²) to select only features that actually matter
+- How to detect and remove redundant features using correlation
+- How to engineer new features from business logic
+- How to build a full sklearn Pipeline
+- How to choose and interpret the right metric — **Recall** — for this kind of problem
+- How to tune hyperparameters with GridSearchCV
+- How to read and interpret the ROC curve
+
+Let's build it.
+
+## Step 1 — Setting Up
+
+```python
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
+df = pd.read_csv(url)
+
+print(f"Dataset loaded: {df.shape[0]} customers, {df.shape[1]} features")
+df.head()
+```
+
+## Step 2 — Understanding the Data
+
+Before touching any model, we need to understand what we're working with.
+
+Here's a guide to the key columns:
+
+| Column | Description |
+|--------|-------------|
+| `customerID` | Unique identifier — useless for prediction |
+| `Churn` | **Target**: Yes = left the company, No = stayed |
+| `tenure` | How many months the customer has been with the company |
+| `MonthlyCharges` | What they pay each month |
+| `TotalCharges` | Total amount paid over their lifetime |
+| `Contract` | Month-to-month, one year, or two year contract |
+| `PaymentMethod` | How they pay |
+| `InternetService` | DSL, Fiber optic, or None |
+
+Let's look at the structure:
+
+```python
+df.info()
+```
+
+## Step 3 — The First Trap: Your Model Scores 80% and It's Worthless
+
+Look at how many customers actually churned vs. stayed:
+
+```python
+df['Churn'].value_counts()
+```
+
+**The problem is immediately visible.**
+
+Only ~26% of customers churned. 74% stayed. This is called **imbalanced data**: one class is much more frequent than the other.
+
+Now imagine a model so lazy it simply predicts **"No Churn"** for every single customer, no matter what. What accuracy does it get?
+
+> **74% accuracy. Without learning anything.**
+
+This is why accuracy lies when data is imbalanced. The model gaming the metric by just always predicting the majority class. It never identifies a single customer who is about to leave — which is the *entire point* of the project.
+
+We'll fix this. But first, let's clean the data.
+
+## Step 4 — Data Cleaning
+
+### 4.1 — The Hidden Type Bug
+
+`TotalCharges` should be a number — but `df.info()` showed it's stored as text (`object`). Why?
+
+Because some rows have a blank space `" "` instead of a real value. Pandas sees that space and treats the whole column as text. Let's investigate:
+
+```python
+# How many rows have a blank space instead of a number?
+print(f"Rows with blank TotalCharges: {len(df[df['TotalCharges'] == ' '])}")
+```
+
+```python
+# These are new customers (tenure = 0) — no total charges yet
+# We simply remove them, they're too new to model churn anyway
+df = df[df['TotalCharges'] != ' ']
+df['TotalCharges'] = df['TotalCharges'].astype(float)
+
+print(f"Remaining rows: {df.shape[0]}")
+```
+
+### 4.2 — Encode the Target
+
+Machine learning models speak numbers, not words. We need to convert our target variable from `"Yes"/"No"` to `1/0`:
+
+```python
+df['Churn'] = df['Churn'].map({'Yes': 1, 'No': 0})
+
+# Confirm the imbalance ratio
+print("Churn distribution:")
+print(df['Churn'].value_counts(normalize=True).round(3))
+```
+
+## Step 5 — Exploratory Data Analysis (EDA)
+
+EDA means exploring the data *before* modeling. The goal is to understand relationships, spot patterns, and make informed decisions about which features to keep.
+
+### 5.1 — Separate Numerical and Categorical Features
+
+Features come in two types:
+- **Numerical**: numbers like `tenure`, `MonthlyCharges` — we can compute averages, correlations
+- **Categorical**: text like `Contract`, `PaymentMethod` — we need different tools
+
+sklearn gives us a utility to detect this automatically:
+
+```python
+from sklearn.compose import make_column_selector as selector
+
+numerical_selector = selector(dtype_exclude='object')
+numerical_features = numerical_selector(df)
+
+# Categorical = everything that's not numerical
+categorical_features = [col for col in df.columns if col not in numerical_features]
+
+# Adjustments: SeniorCitizen is coded as 0/1 but it's actually a category
+categorical_features.append('SeniorCitizen')
+numerical_features.remove('SeniorCitizen')
+# Remove the target and ID from features
+numerical_features = [f for f in numerical_features if f not in ['Churn']]
+
+print(f"Numerical features: {numerical_features}")
+print(f"Categorical features: {categorical_features}")
+```
+
+### 5.2 — Detecting Redundant Features: Correlation
+
+Some features carry **the same information** in different forms. Keeping both doesn't help the model — it just adds noise.
+
+We use a **correlation matrix** to detect this. Correlation measures how two variables move together:
+- `1.0` = perfectly correlated (move identically)
+- `0.0` = no relationship
+- `-1.0` = perfectly inversely correlated
+
+```python
+plt.figure(figsize=(8, 4))
+sns.heatmap(df[numerical_features].corr(), annot=True, fmt='.2f', cmap='coolwarm')
+plt.title("Correlation Matrix — Numerical Features")
+plt.tight_layout()
+plt.show()
+```
+
+**What we see:** `TotalCharges` is almost perfectly correlated with both `tenure` and `MonthlyCharges`. This makes total sense mathematically:
+
+> TotalCharges ≈ tenure × MonthlyCharges
+
+`TotalCharges` contains **no new information** that isn't already in the other two columns. Keeping it would introduce **multicollinearity** — a situation where features are so correlated that they confuse the model. We drop it.
+
+```python
+df = df.drop(columns=['TotalCharges'])
+print("TotalCharges removed. Remaining shape:", df.shape)
+```
+
+### 5.3 — Removing Irrelevant Features: The Chi-Squared Test
+
+For categorical variables, we can't use correlation. Instead, we use the **Chi-Squared (χ²) test** — a statistical test that answers:
+
+> *Is there a real relationship between this feature and churn? Or is any pattern we see just random noise?*
+
+The test gives us a **p-value**:
+- `p-value < 0.05` → the relationship is statistically significant → **keep the feature**
+- `p-value > 0.05` → the pattern might just be random → **consider dropping it**
+
+Think of it as a filter: we only keep features that are genuinely associated with churn.
+
+```python
+from scipy.stats import chi2_contingency
+
+print("Features with NO significant relationship to Churn (p > 0.05):")
+print()
+for feature in categorical_features:
+    if feature not in ['customerID', 'Churn']:
+        table = pd.crosstab(df[feature], df['Churn'])
+        p_value = chi2_contingency(table)[1]
+        if p_value > 0.05:
+            print(f"  → {feature} (p-value = {p_value:.4f}) — not significant, will drop")
+```
+
+```python
+# Drop non-significant features + the ID (useless for prediction)
+df = df.drop(columns=['gender', 'PhoneService', 'customerID'])
+
+print(f"Cleaned dataset: {df.shape[1]} columns remaining")
+```
+
+## Step 6 — Visualizing the Key Patterns
+
+Before engineering features, let's look at what the data tells us visually.
+
+### Contract Type vs Churn
+
+Intuition says: customers on month-to-month contracts can leave anytime. Two-year contracts tie them in. Let's verify:
+
+```python
+plt.figure(figsize=(8, 4))
+sns.barplot(x='Contract', y='Churn', data=df)
+plt.title("Churn Rate by Contract Type")
+plt.ylabel("Churn Rate")
+plt.tight_layout()
+plt.show()
+```
+
+### Tenure vs Churn
+
+Do long-time customers leave less? Let's check:
+
+```python
+plt.figure(figsize=(8, 4))
+sns.boxplot(data=df, x='Churn', y='tenure')
+plt.title("Tenure Distribution: Churned vs Stayed")
+plt.xticks([0, 1], ['Stayed', 'Churned'])
+plt.tight_layout()
+plt.show()
+```
+
+The patterns are clear: **new customers on flexible contracts are far more likely to churn.** This insight will directly feed our feature engineering.
+
+## Step 7 — Feature Engineering
+
+Feature engineering is the process of **creating new, more informative variables** from existing ones. This is where domain knowledge matters more than algorithms.
+
+A model can only learn what's in the data. If we give it better variables, it makes better predictions.
+
+### 7.1 — Simplifying Internet Service Features
+
+Six columns (`OnlineSecurity`, `OnlineBackup`, `DeviceProtection`, `TechSupport`, `StreamingTV`, `StreamingMovies`) have three possible values: `"Yes"`, `"No"`, or `"No internet service"`.
+
+The `"No internet service"` value actually encodes a different thing — whether the customer has internet at all. Let's extract that information explicitly:
+
+```python
+service_features = ['OnlineSecurity', 'OnlineBackup', 'DeviceProtection',
+                    'TechSupport', 'StreamingTV', 'StreamingMovies']
+
+# Create a dedicated binary feature: does the customer have internet?
+df['has_internet'] = np.where(df['OnlineSecurity'] == 'No internet service', 0, 1)
+
+# Now simplify the original columns: replace 'No internet service' with just 'No'
+df[service_features] = df[service_features].replace('No internet service', 'No')
+
+print("has_internet distribution:")
+print(df['has_internet'].value_counts())
+```
+
+### 7.2 — Family Status
+
+Customers with a partner or dependents (children) tend to be more stable. Let's capture that:
+
+```python
+df['has_family'] = np.where(
+    (df['Partner'] == 'Yes') | (df['Dependents'] == 'Yes'), 1, 0
+)
+
+print("has_family distribution:")
+print(df['has_family'].value_counts())
+```
+
+### 7.3 — Senior Citizens Living Alone
+
+Let's look at the interaction between being a senior citizen and having a family. The visualization reveals an important combination:
+
+```python
+plt.figure(figsize=(8, 4))
+sns.barplot(x='SeniorCitizen', y='Churn', data=df, hue='has_family')
+plt.title("Churn Rate: Senior Citizens vs Family Status")
+plt.tight_layout()
+plt.show()
+```
+
+Senior citizens without a family have a dramatically higher churn rate. This is a meaningful combination that the model wouldn't easily discover on its own — so we encode it explicitly:
+
+```python
+df['is_senior_alone'] = np.where(
+    (df['SeniorCitizen'] == 1) & (df['has_family'] == 0), 1, 0
+)
+
+print("is_senior_alone distribution:")
+print(df['is_senior_alone'].value_counts())
+```
+
+### 7.4 — Phone Service
+
+Similarly, `MultipleLines` contains `"No phone service"` as a hidden binary. Let's extract it:
+
+```python
+df['has_phoneservice'] = np.where(df['MultipleLines'] == 'No phone service', 0, 1)
+df['MultipleLines'] = df['MultipleLines'].replace('No phone service', 'No')
+
+print("has_phoneservice distribution:")
+print(df['has_phoneservice'].value_counts())
+```
+
+### 7.5 — Customer Loyalty Groups (Binning Tenure)
+
+Tenure is a continuous number (months). But what's really meaningful is the *loyalty stage* of the customer. We bin it into three groups:
+
+- **New** (0–12 months): still deciding if they like the service
+- **Mid** (12–24 months): getting comfortable
+- **Loyal** (24–72 months): long-term customers, unlikely to leave
+
+This is called **binning** — converting a continuous feature into meaningful categories:
+
+```python
+df['tenure_group'] = pd.cut(
+    df['tenure'],
+    bins=[0, 12, 24, 72],
+    labels=['new', 'mid', 'loyal']
+)
+
+print("Tenure group distribution:")
+print(df['tenure_group'].value_counts())
+```
+
+## Step 8 — Building the Pipeline
+
+Now that our data is clean and enriched, it's time to build the model.
+
+### What is a Pipeline?
+
+A **Pipeline** is a chain of steps that processes data sequentially. Instead of manually applying transformations at each step (which leads to bugs and data leakage), a Pipeline bundles everything together:
+
+```
+Raw Data → Preprocessing → Model → Predictions
+```
+
+The key benefit: **no data leakage**. The preprocessing steps (scaling, encoding) are fitted only on training data and applied consistently to test data.
+
+### 8.1 — Prepare Features and Target
+
+```python
+# Separate features from target
+data = df.drop(columns='Churn')
+target = df['Churn']
+
+data.info()
+```
+
+### 8.2 — Identify Feature Types
+
+We have three types of features to handle differently:
+- **Numerical** (`tenure`, `MonthlyCharges`): need scaling
+- **Categorical** (text columns, `tenure_group`): need encoding
+- **Binary** (0/1 columns): already numeric, pass through unchanged
+
+```python
+from sklearn.compose import make_column_selector as selector, ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.model_selection import train_test_split
+
+numerical_binary_selector = selector(dtype_exclude=['object', 'category'])
+categorical_selector = selector(dtype_include=['object', 'category'])
+
+all_numerical_binary = numerical_binary_selector(data)
+categorical_features = categorical_selector(data)
+
+# Continuous numerical features need scaling
+numerical_features = ['tenure', 'MonthlyCharges']
+# Binary features (0/1) stay as-is
+binary_features = [col for col in all_numerical_binary if col not in numerical_features]
+
+print(f"Numerical (to scale):  {numerical_features}")
+print(f"Binary (passthrough):  {binary_features}")
+print(f"Categorical (to encode): {categorical_features}")
+```
+
+### 8.3 — Train/Test Split
+
+We split the data into two sets:
+- **Training set (80%)**: the model learns from this
+- **Test set (20%)**: we evaluate on this, and the model never sees it during training
+
+We use `stratify=target` to ensure both sets have the same churn ratio — critical for imbalanced data:
+
+```python
+X_train, X_test, y_train, y_test = train_test_split(
+    data, target,
+    stratify=target,
+    random_state=42,
+    test_size=0.2
+)
+
+print(f"Training set:  {len(X_train)} customers ({y_train.mean():.1%} churned)")
+print(f"Test set:      {len(X_test)} customers ({y_test.mean():.1%} churned)")
+```
+
+### 8.4 — The Preprocessor
+
+We use a `ColumnTransformer` to apply different transformations to different column types:
+
+- **StandardScaler**: rescales numerical features so they have mean=0 and std=1. This prevents `MonthlyCharges` (range 0–120) from dominating `tenure` (range 0–72) just because of its larger scale.
+- **OneHotEncoder**: converts categorical text into binary columns. For example, `Contract = "Month-to-month"` becomes three binary columns: `is_month_to_month`, `is_one_year`, `is_two_year`.
+
+```python
+preprocessor = ColumnTransformer(
+    [
+        ('numerical', StandardScaler(), numerical_features),
+        ('categorical', OneHotEncoder(handle_unknown='ignore', sparse_output=False, drop='first'), categorical_features)
+    ],
+    remainder='passthrough'  # Binary features pass through unchanged
+)
+```
+
+## Step 9 — Training Three Models
+
+We'll train three models and compare them. Each is wrapped in a Pipeline.
+
+### Handling Imbalanced Data — The Real Fix
+
+Remember our problem: 74% of customers didn't churn. A lazy model just predicts "No Churn" and gets 74% accuracy.
+
+The fix: we tell each model to **pay more attention to the minority class (churners)** by penalizing mistakes on them more heavily.
+
+- For Logistic Regression and Random Forest: `class_weight='balanced'` automatically adjusts weights inversely proportional to class frequencies
+- For XGBoost: `scale_pos_weight` = ratio of negatives to positives (the equivalent adjustment)
+
+```python
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+
+# Calculate the imbalance ratio for XGBoost
+imbalance_ratio = y_train.value_counts()[0] / y_train.value_counts()[1]
+print(f"Imbalance ratio (negatives/positives): {imbalance_ratio:.2f}")
+
+pipeline_logistic = Pipeline([
+    ('preprocessor', preprocessor),
+    ('model', LogisticRegression(class_weight='balanced', max_iter=1000))
+])
+
+pipeline_rf = Pipeline([
+    ('preprocessor', preprocessor),
+    ('model', RandomForestClassifier(class_weight='balanced', random_state=42))
+])
+
+pipeline_xgb = Pipeline([
+    ('preprocessor', preprocessor),
+    ('model', XGBClassifier(scale_pos_weight=imbalance_ratio, random_state=42, eval_metric='logloss'))
+])
+
+# Train all three
+for name, pipeline in [('Logistic Regression', pipeline_logistic),
+                        ('Random Forest', pipeline_rf),
+                        ('XGBoost', pipeline_xgb)]:
+    pipeline.fit(X_train, y_train)
+    print(f"✓ {name} trained")
+```
+
+## Step 10 — Evaluating the Models: Why Accuracy Still Isn't Enough
+
+### 10.1 — The Accuracy Trap (Again)
+
+Let's first look at accuracy — and then show why it's still not sufficient:
+
+```python
+print(f"{'Model':<25} {'Test Accuracy':>14}")
+print("-" * 41)
+for name, pipeline in [('Logistic Regression', pipeline_logistic),
+                        ('Random Forest', pipeline_rf),
+                        ('XGBoost', pipeline_xgb)]:
+    acc = pipeline.score(X_test, y_test)
+    print(f"{name:<25} {acc:>14.2%}")
+```
+
+### 10.2 — The Right Metric: Recall
+
+In churn prediction, **two types of errors have very different costs**:
+
+| Error | What happened | Business cost |
+|-------|--------------|---------------|
+| **False Positive** | We flagged a customer as churner, but they weren't | We call them, offer a discount — small cost |
+| **False Negative** | A churner slipped through undetected | We lost the customer entirely — high cost |
+
+**Recall** measures: *of all customers who actually churned, what fraction did we catch?*
+
+> High recall = fewer churners slipping through undetected.
+
+This is what we want to maximize. The classification report gives us recall, precision, and F1 for each class:
+
+```python
+from sklearn.metrics import classification_report
+
+for name, pipeline in [('Logistic Regression', pipeline_logistic),
+                        ('Random Forest', pipeline_rf),
+                        ('XGBoost', pipeline_xgb)]:
+    print(f"\n{'─'*50}")
+    print(f"  {name}")
+    print('─'*50)
+    print(classification_report(y_test, pipeline.predict(X_test),
+                                target_names=['Stayed', 'Churned']))
+```
+
+### 10.3 — Cross-Validation: Is This Result Reliable?
+
+The results above come from a single train/test split. What if we got lucky with that particular split?
+
+**5-fold cross-validation** is the answer. It trains and evaluates the model 5 times on different subsets, giving us a much more reliable estimate — and the standard deviation tells us how stable the model is.
+
+We track three metrics simultaneously: **Recall**, **Precision**, and **ROC-AUC**.
+
+```python
+from sklearn.model_selection import cross_validate
+
+models = {
+    'Logistic Regression': pipeline_logistic,
+    'Random Forest': pipeline_rf,
+    'XGBoost': pipeline_xgb
+}
+
+print(f"{'Model':<25} {'Recall':>8} {'Precision':>10} {'ROC-AUC':>10}")
+print("-" * 57)
+
+for name, pipeline in models.items():
+    cv = cross_validate(pipeline, X_train, y_train, cv=5,
+                        scoring=['recall', 'precision', 'roc_auc'])
+    print(f"{name:<25} {cv['test_recall'].mean():>8.3f} "
+          f"{cv['test_precision'].mean():>10.3f} "
+          f"{cv['test_roc_auc'].mean():>10.3f}")
+```
+
+## Step 11 — Hyperparameter Tuning
+
+Every model has **hyperparameters** — settings that control *how* the model learns. Unlike model parameters (which are learned from data), hyperparameters are set by us before training.
+
+**GridSearchCV** automates the search: it tries every combination in a grid, evaluates with cross-validation, and returns the best one.
+
+Critical detail: we set `refit='recall'` — meaning the best model is chosen based on recall, not accuracy. This is a deliberate business decision: we care more about catching churners than about overall correctness.
+
+### 11.1 — Tuning Logistic Regression
+
+The main hyperparameter is `C` — the inverse of regularization strength:
+- Small `C` → strong regularization → simpler model, less risk of overfitting
+- Large `C` → weak regularization → model fits training data more tightly
+
+```python
+from sklearn.model_selection import GridSearchCV
+
+lr_params = {
+    'model__C': [0.01, 0.1, 1, 10, 100],
+    'model__max_iter': [100, 200, 500],
+    'model__solver': ['lbfgs', 'liblinear']
+}
+
+grid_search_lr = GridSearchCV(
+    pipeline_logistic, param_grid=lr_params,
+    scoring=['recall', 'precision', 'roc_auc'],
+    refit='recall', cv=5, n_jobs=-1
+)
+grid_search_lr.fit(X_train, y_train)
+
+idx = grid_search_lr.best_index_
+print(f"Best params: {grid_search_lr.best_params_}")
+print(f"Recall:    {grid_search_lr.cv_results_['mean_test_recall'][idx]:.3f}")
+print(f"Precision: {grid_search_lr.cv_results_['mean_test_precision'][idx]:.3f}")
+print(f"ROC-AUC:   {grid_search_lr.cv_results_['mean_test_roc_auc'][idx]:.3f}")
+```
+
+### 11.2 — Tuning Random Forest
+
+Random Forest has more hyperparameters:
+- `n_estimators`: number of trees in the forest
+- `max_depth`: how deep each tree can grow (deeper = more complex)
+- `min_samples_split` / `min_samples_leaf`: minimum number of samples needed to split a node / be a leaf (controls overfitting)
+
+```python
+rf_params = {
+    'model__n_estimators': [100, 300, 500],
+    'model__max_depth': [5, 10, 20],
+    'model__min_samples_split': [2, 4, 8, 10],
+    'model__min_samples_leaf': [1, 2, 4]
+}
+
+grid_search_rf = GridSearchCV(
+    pipeline_rf, param_grid=rf_params,
+    scoring=['recall', 'precision', 'roc_auc'],
+    refit='recall', cv=5, n_jobs=-1
+)
+grid_search_rf.fit(X_train, y_train)
+
+idx = grid_search_rf.best_index_
+print(f"Best params: {grid_search_rf.best_params_}")
+print(f"Recall:    {grid_search_rf.cv_results_['mean_test_recall'][idx]:.3f}")
+print(f"Precision: {grid_search_rf.cv_results_['mean_test_precision'][idx]:.3f}")
+print(f"ROC-AUC:   {grid_search_rf.cv_results_['mean_test_roc_auc'][idx]:.3f}")
+```
+
+### 11.3 — Tuning XGBoost
+
+XGBoost adds a `learning_rate` (also called eta) — how much each tree corrects the errors of the previous ones:
+- Small rate → slow learning, but more precise
+- Large rate → fast learning, but risks overshooting
+
+```python
+xgb_params = {
+    'model__n_estimators': [100, 300, 500],
+    'model__max_depth': [5, 10, 20],
+    'model__learning_rate': [0.01, 0.1, 0.3]
+}
+
+grid_search_xgb = GridSearchCV(
+    pipeline_xgb, param_grid=xgb_params,
+    scoring=['recall', 'precision', 'roc_auc'],
+    refit='recall', cv=5, n_jobs=-1
+)
+grid_search_xgb.fit(X_train, y_train)
+
+idx = grid_search_xgb.best_index_
+print(f"Best params: {grid_search_xgb.best_params_}")
+print(f"Recall:    {grid_search_xgb.cv_results_['mean_test_recall'][idx]:.3f}")
+print(f"Precision: {grid_search_xgb.cv_results_['mean_test_precision'][idx]:.3f}")
+print(f"ROC-AUC:   {grid_search_xgb.cv_results_['mean_test_roc_auc'][idx]:.3f}")
+```
+
+## Step 12 — Final Evaluation: The ROC Curve
+
+The **ROC curve** (Receiver Operating Characteristic) is one of the most powerful tools for evaluating classifiers.
+
+Every classification model doesn't just output "Churn" or "No Churn" — it outputs a **probability** (e.g., "72% chance this customer churns"). We then apply a **threshold** to convert that probability to a decision: above 0.5 → Churn, below 0.5 → Stay.
+
+But 0.5 is just a default. What if we lower it to 0.3? We'd catch more churners (higher recall) but also flag more false alarms (lower precision).
+
+The ROC curve plots this trade-off across *all possible thresholds*:
+- **X-axis (FPR)**: False Positive Rate — how often do we falsely flag a non-churner?
+- **Y-axis (TPR / Recall)**: True Positive Rate — how often do we correctly catch a churner?
+
+The **AUC** (Area Under the Curve) summarizes the whole curve in one number:
+- `1.0` = perfect model
+- `0.5` = random guessing (the diagonal line)
+
+```python
+from sklearn.metrics import roc_curve, roc_auc_score
+
+best_models = {
+    'Logistic Regression (tuned)': grid_search_lr.best_estimator_,
+    'Random Forest (tuned)': grid_search_rf.best_estimator_,
+    'XGBoost (tuned)': grid_search_xgb.best_estimator_,
+}
+
+fig, ax = plt.subplots(figsize=(8, 6))
+
+for name, model in best_models.items():
+    proba = model.predict_proba(X_test)[:, 1]
+    fpr, tpr, _ = roc_curve(y_test, proba)
+    auc = roc_auc_score(y_test, proba)
+    ax.plot(fpr, tpr, linewidth=2, label=f'{name} (AUC = {auc:.3f})')
+
+ax.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random baseline (AUC = 0.500)')
+ax.set_xlabel('False Positive Rate', fontsize=12)
+ax.set_ylabel('True Positive Rate (Recall)', fontsize=12)
+ax.set_title('ROC Curve — Tuned Model Comparison', fontsize=14, fontweight='bold')
+ax.legend(loc='lower right', fontsize=10)
+ax.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+## Step 13 — What Did the Model Learn? Feature Importance
+
+The best part: which variables actually drive churn predictions?
+
+XGBoost provides **feature importances** — a score for each feature reflecting how much it contributed to improving predictions across all trees.
+
+```python
+best_xgb = grid_search_xgb.best_estimator_
+
+feature_names = best_xgb['preprocessor'].get_feature_names_out()
+importances = best_xgb['model'].feature_importances_
+
+importance_df = (
+    pd.Series(importances, index=feature_names)
+    .sort_values(ascending=True)
+    .tail(15)  # Top 15 features
+)
+
+fig, ax = plt.subplots(figsize=(9, 6))
+importance_df.plot(kind='barh', ax=ax, color='#4575b4', edgecolor='white')
+ax.set_title('Top 15 Feature Importances — XGBoost\n(What the model relies on most)', fontsize=13, fontweight='bold')
+ax.set_xlabel('Importance Score', fontsize=11)
+ax.grid(axis='x', alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+## Wrapping Up
+
+Let's look at the best model's final performance on the test set:
+
+```python
+print("Final evaluation — Best XGBoost model on test set:")
+print(classification_report(y_test, best_xgb.predict(X_test),
+                             target_names=['Stayed', 'Churned']))
+print(f"ROC-AUC: {roc_auc_score(y_test, best_xgb.predict_proba(X_test)[:,1]):.3f}")
+```
+
+---
+
+## Key Takeaways
+
+Let's revisit the question we started with: *"Your model scores 80% accuracy. Is it broken?"*
+
+The answer: **it depends entirely on what that 80% is made of.**
+
+Here's what this notebook taught us, technically:
+
+**On imbalanced data:** Accuracy is a useless metric when classes are imbalanced. A model that ignores the minority class completely can still score high accuracy. Always check recall for the minority class — that's the real test. Use `class_weight='balanced'` or `scale_pos_weight` to force the model to take the minority class seriously.
+
+**On feature selection:** Not every variable deserves a seat at the table. The Chi-Squared test is a principled, statistical way to filter out categorical features that have no meaningful relationship with the target — before any modeling begins. Fewer, better features almost always beat more, noisy ones.
+
+**On multicollinearity:** `TotalCharges ≈ tenure × MonthlyCharges`. Keeping all three would have added noise without adding information. Always check the correlation matrix for numerical features.
+
+**On feature engineering:** The model can only learn from what you give it. `is_senior_alone`, `tenure_group`, `has_internet` — none of these existed in the raw data. They were built from business logic and they carry real predictive power.
+
+**On evaluation:** Use `refit='recall'` in GridSearchCV when catching the minority class is your business priority. The ROC curve gives you a global picture of the model's discriminative power across all thresholds.
+
+---
+
+**What to explore next:**
+- SHAP values for individual-level explanations: *why* did the model flag this specific customer?
+- SMOTE (Synthetic Minority Oversampling) as an alternative to class weighting
+- Threshold optimization: instead of 0.5, use the Youden Index to find the threshold that maximizes TPR − FPR
+- Deploying the pipeline as an API endpoint with FastAPI
+
+---
+
+*Thanks for reading. If you have questions or want to build on this analysis, feel free to reach out.*
