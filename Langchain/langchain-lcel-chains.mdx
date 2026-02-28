@@ -1,5 +1,5 @@
 ---
-title: "LangChain LCEL & Chains: The Pipe Operator and Runnable Composition"
+title: LangChain LCEL & Chains: The Pipe Operator and Runnable Composition
 date: "2026-02-28"
 lastmod: "2026-02-28"
 tags:
@@ -8,12 +8,12 @@ tags:
   - LLM
   - Beginner
 draft: false
-summary: "How to chain LangChain components with the pipe operator | to build clean, modular, streamable pipelines. Covers the Runnable interface (invoke, batch, stream), RunnablePassthrough, RunnableParallel, RunnableLambda, and two real use cases: word count chain and subject-based routing."
+summary: How to chain LangChain components with the pipe operator | to build clean, modular, streamable pipelines. Covers the Runnable interface (invoke, batch, stream), RunnablePassthrough, RunnableParallel, RunnableLambda, and two real use cases: word count chain and subject-based routing.
 images:
   - /static/images/blog/default.jpg
 ---
 
-# NB02 — LCEL & Chains
+# NB02 : LCEL & Chains
 
 > A hands-on guide to LangChain Expression Language (LCEL), the Runnable interface, and chain composition.
 
@@ -23,7 +23,7 @@ images:
 |---|---------|----------|
 | 1 | **Setup** | Imports, API configuration |
 | 2 | **The Runnable Interface** | `.invoke()`, `.batch()`, `.stream()` |
-| 3 | **The Pipe Operator** | `(|)`, `RunnableSequence`, end-to-end streaming |
+| 3 | **The Pipe Operator** | `\|`, `RunnableSequence`, `end-to-end streaming` |
 | 4 | **Utility Runnables** | `RunnablePassthrough`, `RunnableParallel`, `RunnableLambda` |
 | 5 | **Use Case 1** | ML chain with word count |
 | 6 | **Use Case 2** | Subject-based routing chain |
@@ -84,7 +84,7 @@ graph LR
     end
 ```
 
-> Every LLM, Prompt, Parser, and Retriever is a Runnable. They share these methods — only input/output types differ.
+> Every LLM, Prompt, Parser, and Retriever is a Runnable. They share these methods; only input/output types differ.
 
 ```python
 # invoke: one input, one AIMessage output
@@ -124,7 +124,7 @@ graph LR
     D --> E[string output]
 ```
 
-> The chain is defined lazily — no execution happens until `.invoke()`, `.stream()`, or `.batch()` is called.
+> The chain is defined lazily: no execution happens until `.invoke()`, `.stream()`, or `.batch()` is called.
 
 ```python
 # Building a basic LCEL chain
@@ -151,7 +151,7 @@ for token in chain.stream({"subject": "Dropout"}):
 
 ## 4. Utility Runnables
 
-These Runnables are data management tools — they do not call the LLM.
+These Runnables are data management tools; they do not call the LLM.
 They control how data flows and is transformed between components.
 
 | Runnable | Role |
@@ -196,7 +196,7 @@ lambda_chain = runnable_upper | runnable_exclaim
 lambda_chain.invoke("hello")
 ```
 
-## 5. Use Case 1 — ML Chain with Word Count
+## 5. Use Case 1: ML Chain with Word Count
 
 A chain that answers a question about an ML concept and returns both the response and its word count in parallel.
 
@@ -228,7 +228,7 @@ print(f"Word count: {result['count']}")
 print(f"\nResponse:\n{result['response']}")
 ```
 
-## 6. Use Case 2 — Subject-Based Routing Chain
+## 6. Use Case 2: Subject-Based Routing Chain
 
 A chain that routes the input to a specialized prompt based on the subject: Python, Math, or ML.
 
@@ -296,4 +296,4 @@ for subject in ["Python", "Math", "ML"]:
 | Parallel execution | `RunnableParallel` | Run multiple branches simultaneously |
 | Custom functions | `RunnableLambda` | Wrap any Python function into a Runnable |
 
-> Next: **NB03 — RAG** (Retrieval-Augmented Generation)
+> Next: **NB03: RAG** (Retrieval-Augmented Generation)
