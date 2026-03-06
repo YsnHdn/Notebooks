@@ -25,31 +25,41 @@ RAG is a dual-pipeline system that solves two fundamental LLM limitations:
 RAG solves this by retrieving relevant documents at runtime and injecting them as context into the prompt, so the LLM generates answers grounded in real, up-to-date information.
 
 ```mermaid
-flowchart TD
-    subgraph INDEXING[" Phase 1 — Indexing (Offline)"]
+flowchart LR
+
+    subgraph INDEXING["Phase 1 — Indexing"]
         direction LR
-        A[ Web Source] --> B[WebBaseLoader]
+        A[Web Source] --> B[WebBaseLoader]
         B --> C[Documents]
-        C --> D[RecursiveCharacterTextSplitter]
+        C --> D[RecursiveCharacter
+        TextSplitter]
         D --> E[Chunks]
-        E --> F[HuggingFaceEmbeddings]
+        E --> F[HuggingFace
+        Embeddings]
         F --> G[(InMemoryVectorStore)]
     end
 
-    subgraph RETRIEVAL[" Phase 2 — Retrieval "]
-        direction TB
-        Q[ User Question] --> RP[RunnableParallel]
+    subgraph RETRIEVAL["Phase 2 — Retrieval"]
+        direction LR
+        Q[User Question] --> RP[RunnableParallel]
         RP -->|branch 1| RET[Retriever]
         RP -->|branch 2| PASS[RunnablePassthrough]
+
         RET --> FMT[format_docs]
         FMT -->|context| PT[ChatPromptTemplate]
+
         PASS -->|question| PT
         PT --> LLM[LLM]
         LLM --> OUT[StrOutputParser]
-        OUT --> ANS[ Answer]
+        OUT --> ANS[Answer]
     end
 
     G -->|similarity search| RET
+
+    %% Colors
+    style C fill:#FEF9C3,stroke:#CA8A04,color:#713F12
+    style E fill:#FEF9C3,stroke:#CA8A04,color:#713F12
+    style G fill:#DCFCE7,stroke:#16A34A,color:#14532D
 ```
 
 ## Key Concepts
