@@ -25,29 +25,31 @@ RAG is a dual-pipeline system that solves two fundamental LLM limitations:
 RAG solves this by retrieving relevant documents at runtime and injecting them as context into the prompt, so the LLM generates answers grounded in real, up-to-date information.
 
 ```mermaid
-flowchart LR
-    subgraph INDEXING[Phase 1: Indexing - Offline]
-        A[Documents] --> B[WebBaseLoader]
-        B --> C[RecursiveCharacterTextSplitter]
-        C --> D[HuggingFaceEmbeddings]
-        D --> E[InMemoryVectorStore]
+flowchart TD
+    subgraph INDEXING[" Phase 1 — Indexing (Offline)"]
+        direction LR
+        A[ Web Source] --> B[WebBaseLoader]
+        B --> C[Documents]
+        C --> D[RecursiveCharacterTextSplitter]
+        D --> E[Chunks]
+        E --> F[HuggingFaceEmbeddings]
+        F --> G[(InMemoryVectorStore)]
     end
 
-    subgraph RETRIEVAL[Phase 2: Retrieval and Generation - Online]
-        F[User Question] --> G[RunnableParallel]
-        G --> H[Retriever]
-        G --> I[RunnablePassthrough]
-        H --> J[format_docs]
-        J --> K[context]
-        I --> L[question]
-        K --> M[ChatPromptTemplate]
-        L --> M
-        M --> N[LLM]
-        N --> O[StrOutputParser]
-        O --> P[Answer]
+    subgraph RETRIEVAL[" Phase 2 — Retrieval "]
+        direction TB
+        Q[ User Question] --> RP[RunnableParallel]
+        RP -->|branch 1| RET[Retriever]
+        RP -->|branch 2| PASS[RunnablePassthrough]
+        RET --> FMT[format_docs]
+        FMT -->|context| PT[ChatPromptTemplate]
+        PASS -->|question| PT
+        PT --> LLM[LLM]
+        LLM --> OUT[StrOutputParser]
+        OUT --> ANS[ Answer]
     end
 
-    E --> H
+    G -->|similarity search| RET
 ```
 
 ## Key Concepts
