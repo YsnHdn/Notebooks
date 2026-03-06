@@ -1,7 +1,7 @@
 ---
 title: "LangChain Tools and Agents: From Function Calling to ReAct Agents"
-date: "2026-03-06"
-lastmod: "2026-03-06"
+date: "2026-03-07"
+lastmod: "2026-03-07"
 tags:
   - Python
   - LangChain
@@ -25,6 +25,7 @@ We cover three progressive levels:
 - **Section 3 - Agent (high-level)**: automating the loop with LangGraph
 
 ```mermaid
+%%{init: {'themeVariables': {'fontSize': '10px', 'nodePadding': 5, 'textMargin': 2}}}%%
 graph TD
     A([HumanMessage]) --> B[LLM node]
     B -->|finish_reason: tool_calls| C[ToolNode]
@@ -71,7 +72,7 @@ Under the hood, `@tool` converts the function into a `StructuredTool` object, wh
 
 ```mermaid
 graph LR
-    A[Python function] -->|@tool decorator| B[StructuredTool]
+    A[Python function] -->|tool decorator| B[StructuredTool]
     B --> C[.name]
     B --> D[.description]
     B --> E[.args]
@@ -420,14 +421,12 @@ for msg in result["messages"]:
 
 ```mermaid
 graph TD
-    A[Python function] -->|@tool| B[StructuredTool]
-    B -->|.name .description .args| C[LLM understands the tool]
-    B -->|llm.bind_tools| D[LLM with tools]
-    D -->|AIMessage tool_calls| E[Manual tool execution]
-    E -->|ToolMessage| D
-
-    D -->|create_react_agent| F[CompiledStateGraph]
-    F -->|automates the loop| G[AgentState messages]
+    A[Python function] -->|tool decorator| B[StructuredTool]
+    B -->|bind tools| C[LLM with tools]
+    C -->|tool calls| D[Tool execution]
+    D -->|ToolMessage| C
+    C -->|create react agent| E[CompiledStateGraph]
+    E --> F[AgentState messages]
 
     style B fill:#DCFCE7,stroke:#16A34A,color:#14532D
     style D fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A
