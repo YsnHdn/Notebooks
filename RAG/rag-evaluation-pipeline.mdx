@@ -227,11 +227,22 @@ expanded : "Who does Lisa play?"  <- returned unchanged
 def expand_query(query: str, history: List[Message], llm) -> str:
     """
     Rewrites the query into a self-contained question using conversation history.
-    If history is empty, returns the query unchanged.
-    The LLM decides whether rewriting is needed: if the query is already
-    self-contained, it returns it unchanged.
+    
+    Two early exits:
+    - If the query is already self-contained, return it unchanged (no LLM call needed).
+    - If history is empty, we have no context to resolve the ambiguity, return unchanged.
+    
+    Only if the query is ambiguous AND history is available do we call the LLM.
     Mirrors the Query Expansion feature in QAnswer Retriever Settings.
     """
+    prompt_check = f"""Is this question self-contained, or does it rely on context to be understood?
+Reply with only one word: CLEAR or AMBIGUOUS.
+
+Question: {query}
+"""
+    if llm.invoke(prompt_check).strip().upper() == "CLEAR":
+        return query
+
     if not history:
         return query
 
@@ -239,17 +250,16 @@ def expand_query(query: str, history: List[Message], llm) -> str:
         f"{m.role.capitalize()}: {m.content}" for m in history
     )
 
-    prompt = f"""Given this conversation history:
+    prompt_rewrite = f"""Given this conversation history:
 {history_text}
 
 Rewrite the following question to be fully self-contained.
-Replace all ambiguous pronouns with their actual referents.
-If the question is already self-contained, return it unchanged.
-Return only the question, nothing else.
+Replace all ambiguous pronouns and references with their actual referents.
+Return only the rewritten question, nothing else.
 
 Question: {query}
 """
-    return llm.invoke(prompt)
+    return llm.invoke(prompt_rewrite)
 ```
 
 ## Step 4 : Re-run with the New Config
