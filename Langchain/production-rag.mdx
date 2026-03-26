@@ -87,7 +87,7 @@ HTMLHeaderTextSplitter
 ```
 
 ### Diagram
-<div align="center"><img src="Images\Langchain\Chunking_strategy.png" width="700"/></div>
+<div align="center"><img src="../Images/Langchain/Chunking_strategy.png" width="700"/></div>
 
 ```python
 import requests
@@ -210,7 +210,7 @@ k=10 on each retriever  ->  8 to 20 candidates via RRF  ->  Reranker(top_n=5)
 ```
 
 #### Diagram
-<div align="center"><img src="Images/Langchain/Hybrid_search.png" width="700"/></div>
+<div align="center"><img src="../Images/Langchain/Hybrid_search.png" width="700"/></div>
 
 ```python
 from langchain_community.retrievers import BM25Retriever
@@ -302,7 +302,7 @@ FlashrankRerank(top_n=5, score_threshold=0.3)
 LangChain wraps the reranker in `ContextualCompressionRetriever`: a standard Runnable that combines a base retriever with a document compressor. From the outside it looks like any other retriever: `.invoke(query)` returns a list of documents.
 
 #### Diagram
-<div align="center"><img src="Images/Langchain/Reranker.png" width="700"/></div>
+<div align="center"><img src="../Images/Langchain/Reranker.png" width="700"/></div>
 
 ```python
 from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
@@ -362,7 +362,7 @@ This approach is equivalent to RAGAS metrics:
 Key distinction between faithfulness and correctness: a response can be faithful (grounded in docs) but incorrect (the docs themselves were wrong or incomplete). These two metrics catch different failure modes.
 
 ### Diagram
-<div align="center"><img src="Images/Langchain/Evaluation.png" width="700"/></div>
+<div align="center"><img src="../Images/Langchain/Evaluation.png" width="700"/></div>
 
 ```python
 from langchain_openai import ChatOpenAI
